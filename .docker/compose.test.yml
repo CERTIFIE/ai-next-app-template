@@ -1,0 +1,149 @@
+# Ambiente di test isolato. Non usarlo direttamente: passa da `.docker/test.sh`
+# (o dagli script npm `test`, `test:unit`, `test:integration`, `test:e2e`),
+# che genera TEST_RUN_ID, avvia la suite e alla fine elimina SOLO le risorse
+# di questa esecuzione.
+#
+# Isolamento:
+#   - progetto Compose:   <APP_NAME>_test_<TEST_RUN_ID>  (rete, volumi, container propri)
+#   - database base:      <APP_NAME>_test_<TEST_RUN_ID>
+#   - database per worker: <APP_NAME>_test_<TEST_RUN_ID>_<worker>  (creati dal setup di Vitest)
+#   - nessuna porta pubblicata sull'host: più esecuzioni possono girare insieme
+#   - report in reports/<TEST_RUN_ID>/
+#   - unico volume condiviso: la cache npm (esterna, mai eliminata dai test)
+
+name: ${APP_NAME:-app}_test_${TEST_RUN_ID:?usa .docker/test.sh oppure imposta TEST_RUN_ID}
+
+x-node-test: &node-test
+  build:
+    context: ..
+    dockerfile: .docker/app/Dockerfile
+    target: dev
+    args:
+      NODE_VERSION: ${NODE_VERSION:-24}
+  image: ${APP_NAME:-app}-dev:local
+  working_dir: /app
+  # Le dipendenze le installa una sola volta il servizio "deps".
+  entrypoint: []
+  volumes:
+    - ..:/app
+    - node_modules:/app/node_modules
+    - next_build:/app/.next
+    - npm_cache:/home/node/.npm
+  environment: &test-env
+    NODE_ENV: test
+    CI: "true"
+    TEST_RUN_ID: ${TEST_RUN_ID}
+    APP_NAME: ${APP_NAME:-app}
+    REPORTS_DIR: /app/reports/${TEST_REPORTS_NAME:-${TEST_RUN_ID}}
+    TEST_ARGS: ${TEST_ARGS:-}
+    DATABASE_URL: postgresql://test:test@test-db:5432/${APP_NAME:-app}_test_${TEST_RUN_ID}
+    # URL amministrativo con cui il setup di Vitest crea e rimuove i database per worker.
+    TEST_DATABASE_ADMIN_URL: postgresql://test:test@test-db:5432/postgres
+    SMTP_HOST: test-mail
+    SMTP_PORT: "1025"
+    MAILDEV_API_URL: http://test-mail:1080
+    BETTER_AUTH_SECRET: test-secret-not-for-production-0123456789
+    BETTER_AUTH_URL: http://app-test:3000
+    CRON_SECRET: test-cron-secret
+
+services:
+  # ------------------------------------------------------------------ deps
+  deps:
+    <<: *node-test
+    entrypoint: ["entrypoint.dev.sh"]
+    environment:
+      WAIT_FOR_SCAFFOLD: "false"
+    command: ["true"]
+
+  # ------------------------------------------------------------------ servizi di prova
+  test-db:
+    image: postgres:${POSTGRES_VERSION:-17}-alpine
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: ${APP_NAME:-app}_test_${TEST_RUN_ID}
+    # Dati in RAM: spariscono con il container, nessun residuo sull'host.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  test-mail:
+    image: maildev/maildev:${MAILDEV_VERSION:-latest}
+
+  # ------------------------------------------------------------------ suite
+  unit:
+    <<: *node-test
+    command: ["sh", "-c", "npm run vitest:unit -- $${TEST_ARGS}"]
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+
+  integration:
+    <<: *node-test
+    command: ["sh", "-c", "npm run vitest:integration -- $${TEST_ARGS}"]
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+      test-db:
+        condition: service_healthy
+      test-mail:
+        condition: service_started
+
+  # Unit + integration in un'unica esecuzione con copertura (lcov in $REPORTS_DIR).
+  coverage:
+    <<: *node-test
+    command: ["sh", "-c", "npm run vitest:coverage -- $${TEST_ARGS}"]
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+      test-db:
+        condition: service_healthy
+      test-mail:
+        condition: service_started
+
+  # ------------------------------------------------------------------ e2e (profilo "e2e")
+  # Build di produzione dell'app collegata ai servizi di prova, poi Playwright.
+  app-test:
+    <<: *node-test
+    profiles: ["e2e"]
+    command: ["sh", "-c", "npm run build:next && npm run start -- --hostname 0.0.0.0 --port 3000"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000 >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+      test-db:
+        condition: service_healthy
+      test-mail:
+        condition: service_started
+
+  e2e:
+    # La versione dell'immagine deve coincidere con quella di @playwright/test.
+    image: mcr.microsoft.com/playwright:${PLAYWRIGHT_VERSION:-v1.56.0}-noble
+    profiles: ["e2e"]
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - node_modules:/app/node_modules
+    environment:
+      <<: *test-env
+      BASE_URL: http://app-test:3000
+    command: ["sh", "-c", "npx playwright test $${TEST_ARGS}"]
+    depends_on:
+      app-test:
+        condition: service_healthy
+
+volumes:
+  node_modules:
+  next_build:
+  npm_cache:
+    external: true
+    name: ${APP_NAME:-app}_npm_cache

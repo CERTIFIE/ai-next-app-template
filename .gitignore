@@ -1,0 +1,53 @@
+# --- dipendenze e build (vivono nei volumi Docker)
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# --- test e qualità
+coverage/
+reports/
+test-results/
+playwright-report/
+blob-report/
+.scannerwork/
+
+# --- dati persistenti dei servizi (tieni solo il README)
+.data/*
+!.data/README.md
+
+# --- ambiente e segreti
+.env
+.env*.local
+!.env.example
+*.pem
+
+# --- Claude Code: preferenze personali e memoria locale
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/agent-memory-local/
+.claude/worktrees/
+
+# --- documenti riservati del cliente: decommenta se gli originali e i loro
+#     estratti non devono andare nel repository
+# .documents/*
+# !.documents/.gitkeep
+# docs/sources/
+
+# --- deploy
+.vercel
+
+# --- sistema ed editor
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/tasks.json

@@ -1,0 +1,29 @@
+# Il contesto di build serve solo agli stadi build/runner e alle immagini di
+# supporto: escludi dati, dipendenze dell'host, documenti e segreti.
+.git
+.gitignore
+node_modules
+.next
+out
+coverage
+reports
+test-results
+playwright-report
+.scannerwork
+
+.data
+.documents
+.claude
+.vscode
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+
+.env
+.env.*
+!.env.example
+
+**/.DS_Store
+**/*.log
+.vercel
+docs

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(docker compose *)",
+      "Bash(npm run *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./.env.*.local)",
+      "Bash(docker system prune *)",
+      "Bash(docker volume prune *)",
+      "Bash(docker volume rm *)",
+      "Bash(rm -rf .data*)",
+      "Bash(rm -rf ./.data*)",
+      "Edit(./.documents/**)",
+      "Edit(./docs/sources/**)",
+      "Edit(./docs/brief.md)",
+      "Write(./.documents/**)",
+      "Write(./docs/sources/**)",
+      "Write(./docs/brief.md)"
+    ]
+  }
+}

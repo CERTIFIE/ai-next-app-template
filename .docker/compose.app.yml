@@ -1,0 +1,163 @@
+# Ambiente di sviluppo ed esecuzione locale.
+# Avvio (dalla radice del progetto):
+#   docker compose --env-file .env -f .docker/compose.app.yml up -d --build
+# oppure, dopo lo scheletro, `npm run docker:up`.
+#
+# I percorsi relativi sono risolti rispetto a questa cartella (.docker/).
+# I dati persistenti vivono sull'host in ../.data/<servizio>/.
+
+name: ${APP_NAME:-app}
+
+services:
+  # ------------------------------------------------------------------ app
+  app:
+    build:
+      context: ..
+      dockerfile: .docker/app/Dockerfile
+      target: dev
+      args:
+        NODE_VERSION: ${NODE_VERSION:-24}
+    image: ${APP_NAME:-app}-dev:local
+    env_file:
+      - path: ../.env
+        required: false
+    working_dir: /app
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@postgres:5432/${POSTGRES_DB:-app}
+      SMTP_HOST: maildev
+      SMTP_PORT: "1025"
+      STORAGE_DIR: /storage
+      WATCHPACK_POLLING: ${WATCHPACK_POLLING:-false}
+    volumes:
+      - ..:/app
+      - node_modules:/app/node_modules
+      - next_cache:/app/.next
+      - ../.data/storage:/storage
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+      # Debugger Node: solo loopback dell'host, mai esposto in rete.
+      - "127.0.0.1:${DEBUG_PORT:-9229}:9229"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      maildev:
+        condition: service_started
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ cron
+  cron:
+    build:
+      context: ..
+      dockerfile: .docker/cron/Dockerfile
+    image: ${APP_NAME:-app}-cron:local
+    environment:
+      APP_INTERNAL_URL: http://app:3000
+      CRON_SECRET: ${CRON_SECRET:-}
+      TZ: UTC
+    volumes:
+      - ./cron:/crontab:ro
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ postgres
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-17}-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      SONAR_DB: ${SONAR_DB:-sonar}
+      SONAR_DB_USER: ${SONAR_DB_USER:-sonar}
+      SONAR_DB_PASSWORD: ${SONAR_DB_PASSWORD:-sonar}
+    volumes:
+      - ../.data/postgres:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ maildev
+  maildev:
+    image: maildev/maildev:${MAILDEV_VERSION:-latest}
+    environment:
+      MAILDEV_MAIL_DIRECTORY: /data
+    volumes:
+      - ../.data/maildev:/data
+    ports:
+      - "127.0.0.1:${MAILDEV_WEB_PORT:-1080}:1080"
+      - "127.0.0.1:${MAILDEV_SMTP_PORT:-1025}:1025"
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ sonarqube
+  # Primo accesso: http://localhost:9000 (admin/admin, cambio password obbligatorio),
+  # poi crea un token di analisi e mettilo in SONAR_TOKEN dentro .env.
+  sonarqube:
+    image: sonarqube:${SONARQUBE_VERSION:-community}
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://postgres:5432/${SONAR_DB:-sonar}
+      SONAR_JDBC_USERNAME: ${SONAR_DB_USER:-sonar}
+      SONAR_JDBC_PASSWORD: ${SONAR_DB_PASSWORD:-sonar}
+      # Ambiente di sviluppo: evita il controllo vm.max_map_count di Elasticsearch.
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    volumes:
+      - ../.data/sonarqube/data:/opt/sonarqube/data
+      - ../.data/sonarqube/extensions:/opt/sonarqube/extensions
+      - ../.data/sonarqube/logs:/opt/sonarqube/logs
+    ports:
+      - "127.0.0.1:${SONAR_PORT:-9000}:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ sonar-scanner
+  # Analisi su richiesta (`npm run sonar`), non parte con `up`:
+  #   docker compose --env-file .env -f .docker/compose.app.yml --profile scan run --rm sonar-scanner
+  # La copertura viene letta da reports/sonar/lcov.info (prodotto da `.docker/test.sh coverage`).
+  sonar-scanner:
+    image: sonarsource/sonar-scanner-cli:${SONAR_SCANNER_VERSION:-latest}
+    profiles: ["scan"]
+    environment:
+      SONAR_HOST_URL: http://sonarqube:9000
+      SONAR_TOKEN: ${SONAR_TOKEN:-}
+    working_dir: /usr/src
+    volumes:
+      - ..:/usr/src:ro
+    command:
+      - -Dsonar.projectKey=${APP_NAME:-app}
+      - -Dsonar.projectName=${APP_NAME:-app}
+      - -Dsonar.sources=src
+      - -Dsonar.tests=tests
+      - -Dsonar.exclusions=**/node_modules/**,**/.next/**,src/i18n/dictionaries/**
+      - -Dsonar.javascript.lcov.reportPaths=reports/sonar/lcov.info
+      - -Dsonar.working.directory=/tmp/scannerwork
+      - -Dsonar.qualitygate.wait=true
+    depends_on:
+      sonarqube:
+        condition: service_started
+
+  # ------------------------------------------------------------------ documents
+  # Converte i documenti del cliente (.documents/: DOCX, XLSX, PDF, PPTX) in
+  # Markdown leggibile dagli agenti (docs/sources/ + INDEX.md). Su richiesta:
+  #   docker compose --env-file .env -f .docker/compose.app.yml --profile tools run --rm documents
+  # Aggiungi "--force" in fondo per riconvertire anche i file invariati.
+  documents:
+    build:
+      context: ..
+      dockerfile: .docker/documents/Dockerfile
+    image: ${APP_NAME:-app}-documents:local
+    profiles: ["tools"]
+    volumes:
+      - ../.documents:/documents:ro
+      - ../docs/sources:/out
+
+volumes:
+  node_modules:
+  next_cache:

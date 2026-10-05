@@ -1,0 +1,6 @@
+# Job pianificati di sviluppo (sintassi cron, orari in UTC).
+# Ogni job è una rotta /api/cron/<nome> dell'app: tieni allineata la stessa
+# pianificazione in vercel.json (o nello scheduler del target di produzione).
+#
+# min ora giorno mese giorno-sett  comando
+# */15 *   *      *    *            run-job example >> /proc/1/fd/1 2>&1
